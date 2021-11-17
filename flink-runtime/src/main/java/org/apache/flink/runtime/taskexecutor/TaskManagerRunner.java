@@ -75,9 +75,12 @@ import org.apache.flink.util.TaskManagerExceptionUtils;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 import org.apache.flink.util.concurrent.FutureUtils;
 
+import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.net.InetAddress;
 import java.time.Duration;
@@ -163,6 +166,8 @@ public class TaskManagerRunner implements FatalErrorHandler {
         this.resourceId =
                 getTaskManagerResourceID(
                         configuration, rpcService.getAddress(), rpcService.getPort());
+
+        ClusterEntrypointUtils.configureTaskManagerWorkingDirectory(configuration, resourceId);
 
         HeartbeatServices heartbeatServices = HeartbeatServices.fromConfiguration(configuration);
 
@@ -299,6 +304,14 @@ public class TaskManagerRunner implements FatalErrorHandler {
                 highAvailabilityServices.close();
             } catch (Exception e) {
                 exception = ExceptionUtils.firstOrSuppressed(e, exception);
+            }
+
+            final File workingDirectory = ClusterEntrypointUtils.getWorkingDirectory(configuration);
+
+            try {
+                FileUtils.deleteDirectory(workingDirectory);
+            } catch (IOException ioe) {
+                exception = ExceptionUtils.firstOrSuppressed(ioe, exception);
             }
 
             terminationFutures.add(rpcService.stopService());

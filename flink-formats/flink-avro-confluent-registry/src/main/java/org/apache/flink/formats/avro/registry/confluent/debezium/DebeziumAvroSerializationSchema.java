@@ -139,6 +139,7 @@ public class DebeziumAvroSerializationSchema implements SerializationSchema<RowD
                                 DataTypes.FIELD("before", dataType.nullable()),
                                 DataTypes.FIELD("after", dataType.nullable()),
                                 DataTypes.FIELD("op", DataTypes.STRING()))
+                        .notNull()
                         .getLogicalType();
     }
 }

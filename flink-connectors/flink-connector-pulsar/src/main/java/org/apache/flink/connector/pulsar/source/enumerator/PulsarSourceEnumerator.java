@@ -21,17 +21,18 @@ package org.apache.flink.connector.pulsar.source.enumerator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.connector.pulsar.common.request.PulsarAdminRequest;
 import org.apache.flink.connector.pulsar.source.config.SourceConfiguration;
 import org.apache.flink.connector.pulsar.source.enumerator.assigner.SplitAssigner;
 import org.apache.flink.connector.pulsar.source.enumerator.cursor.CursorPosition;
 import org.apache.flink.connector.pulsar.source.enumerator.cursor.StartCursor;
+import org.apache.flink.connector.pulsar.source.enumerator.cursor.StopCursor;
 import org.apache.flink.connector.pulsar.source.enumerator.subscriber.PulsarSubscriber;
 import org.apache.flink.connector.pulsar.source.enumerator.topic.TopicPartition;
 import org.apache.flink.connector.pulsar.source.enumerator.topic.range.RangeGenerator;
 import org.apache.flink.connector.pulsar.source.split.PulsarPartitionSplit;
 import org.apache.flink.util.FlinkRuntimeException;
 
-import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.MessageId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,17 +44,18 @@ import java.util.List;
 import java.util.Set;
 
 import static java.util.Collections.singletonList;
-import static org.apache.flink.connector.pulsar.common.config.PulsarClientFactory.createAdmin;
 import static org.apache.flink.connector.pulsar.common.utils.PulsarExceptionUtils.sneakyAdmin;
+import static org.apache.flink.connector.pulsar.source.enumerator.PulsarSourceEnumState.initialState;
+import static org.apache.flink.connector.pulsar.source.enumerator.assigner.SplitAssignerFactory.createAssigner;
 
-/** The enumerator class for pulsar source. */
+/** The enumerator class for the pulsar source. */
 @Internal
 public class PulsarSourceEnumerator
         implements SplitEnumerator<PulsarPartitionSplit, PulsarSourceEnumState> {
 
     private static final Logger LOG = LoggerFactory.getLogger(PulsarSourceEnumerator.class);
 
-    private final PulsarAdmin pulsarAdmin;
+    private final PulsarAdminRequest adminRequest;
     private final PulsarSubscriber subscriber;
     private final StartCursor startCursor;
     private final RangeGenerator rangeGenerator;
@@ -64,17 +66,35 @@ public class PulsarSourceEnumerator
     public PulsarSourceEnumerator(
             PulsarSubscriber subscriber,
             StartCursor startCursor,
+            StopCursor stopCursor,
+            RangeGenerator rangeGenerator,
+            SourceConfiguration sourceConfiguration,
+            SplitEnumeratorContext<PulsarPartitionSplit> context) {
+        this(
+                subscriber,
+                startCursor,
+                stopCursor,
+                rangeGenerator,
+                sourceConfiguration,
+                context,
+                initialState());
+    }
+
+    public PulsarSourceEnumerator(
+            PulsarSubscriber subscriber,
+            StartCursor startCursor,
+            StopCursor stopCursor,
             RangeGenerator rangeGenerator,
             SourceConfiguration sourceConfiguration,
             SplitEnumeratorContext<PulsarPartitionSplit> context,
-            SplitAssigner splitAssigner) {
-        this.pulsarAdmin = createAdmin(sourceConfiguration);
+            PulsarSourceEnumState enumState) {
+        this.adminRequest = new PulsarAdminRequest(sourceConfiguration);
         this.subscriber = subscriber;
         this.startCursor = startCursor;
         this.rangeGenerator = rangeGenerator;
         this.sourceConfiguration = sourceConfiguration;
         this.context = context;
-        this.splitAssigner = splitAssigner;
+        this.splitAssigner = createAssigner(stopCursor, sourceConfiguration, context, enumState);
     }
 
     @Override
@@ -86,7 +106,7 @@ public class PulsarSourceEnumerator
             LOG.info(
                     "Starting the PulsarSourceEnumerator for subscription {} "
                             + "with partition discovery interval of {} ms.",
-                    sourceConfiguration.getSubscriptionDesc(),
+                    subscriptionDesc(),
                     sourceConfiguration.getPartitionDiscoveryIntervalMs());
             context.callAsync(
                     this::getSubscribedTopicPartitions,
@@ -97,7 +117,7 @@ public class PulsarSourceEnumerator
             LOG.info(
                     "Starting the PulsarSourceEnumerator for subscription {} "
                             + "without periodic partition discovery.",
-                    sourceConfiguration.getSubscriptionDesc());
+                    subscriptionDesc());
             context.callAsync(this::getSubscribedTopicPartitions, this::checkPartitionChanges);
         }
     }
@@ -114,7 +134,12 @@ public class PulsarSourceEnumerator
 
         // If the failed subtask has already restarted, we need to assign pending splits to it.
         if (context.registeredReaders().containsKey(subtaskId)) {
-            assignPendingPartitionSplits(singletonList(subtaskId));
+            LOG.debug(
+                    "Reader {} has been restarted after crashing, we will put splits back to it.",
+                    subtaskId);
+            // Reassign for all readers in case of adding splits after scale up/down.
+            List<Integer> readers = new ArrayList<>(context.registeredReaders().keySet());
+            assignPendingPartitionSplits(readers);
         }
     }
 
@@ -123,7 +148,7 @@ public class PulsarSourceEnumerator
         LOG.debug(
                 "Adding reader {} to PulsarSourceEnumerator for subscription {}.",
                 subtaskId,
-                sourceConfiguration.getSubscriptionDesc());
+                subscriptionDesc());
         assignPendingPartitionSplits(singletonList(subtaskId));
     }
 
@@ -134,12 +159,21 @@ public class PulsarSourceEnumerator
 
     @Override
     public void close() {
-        if (pulsarAdmin != null) {
-            pulsarAdmin.close();
+        if (adminRequest != null) {
+            adminRequest.close();
         }
     }
 
     // ----------------- private methods -------------------
+
+    /** Convert the subscription into a readable string. */
+    private String subscriptionDesc() {
+        return String.format(
+                "%s(%s,%s)",
+                sourceConfiguration.getSubscriptionName(),
+                sourceConfiguration.getSubscriptionType(),
+                sourceConfiguration.getSubscriptionMode());
+    }
 
     /**
      * List subscribed topic partitions on Pulsar cluster.
@@ -151,12 +185,12 @@ public class PulsarSourceEnumerator
      */
     private Set<TopicPartition> getSubscribedTopicPartitions() {
         int parallelism = context.currentParallelism();
-        return subscriber.getSubscribedTopicPartitions(pulsarAdmin, rangeGenerator, parallelism);
+        return subscriber.getSubscribedTopicPartitions(adminRequest, rangeGenerator, parallelism);
     }
 
     /**
-     * Check if there's any partition changes within subscribed topic partitions fetched by worker
-     * thread, and convert them to splits the assign them to pulsar readers.
+     * Check if there are any partition changes within subscribed topic partitions fetched by worker
+     * thread, and convert them to splits, then assign them to pulsar readers.
      *
      * <p>NOTE: This method should only be invoked in the coordinator executor thread.
      *
@@ -184,21 +218,14 @@ public class PulsarSourceEnumerator
         for (TopicPartition partition : newPartitions) {
             String topicName = partition.getFullTopicName();
             String subscriptionName = sourceConfiguration.getSubscriptionName();
+            CursorPosition position =
+                    startCursor.position(partition.getTopic(), partition.getPartitionId());
+            MessageId initialPosition = queryInitialPosition(topicName, position);
 
-            List<String> subscriptions =
-                    sneakyAdmin(() -> pulsarAdmin.topics().getSubscriptions(topicName));
-            if (!subscriptions.contains(subscriptionName)) {
-                CursorPosition position =
-                        startCursor.position(partition.getTopic(), partition.getPartitionId());
-                MessageId initialPosition = queryInitialPosition(topicName, position);
-
-                sneakyAdmin(
-                        () ->
-                                pulsarAdmin
-                                        .topics()
-                                        .createSubscription(
-                                                topicName, subscriptionName, initialPosition));
-            }
+            sneakyAdmin(
+                    () ->
+                            adminRequest.createSubscriptionIfNotExist(
+                                    topicName, subscriptionName, initialPosition));
         }
     }
 
@@ -208,9 +235,8 @@ public class PulsarSourceEnumerator
         if (type == CursorPosition.Type.TIMESTAMP) {
             return sneakyAdmin(
                     () ->
-                            pulsarAdmin
-                                    .topics()
-                                    .getMessageIdByTimestamp(topicName, position.getTimestamp()));
+                            adminRequest.getMessageIdByPublishTime(
+                                    topicName, position.getTimestamp()));
         } else if (type == CursorPosition.Type.MESSAGE_ID) {
             return position.getMessageId();
         } else {
@@ -230,9 +256,17 @@ public class PulsarSourceEnumerator
                 });
 
         // Assign splits to downstream readers.
-        splitAssigner.createAssignment(pendingReaders).ifPresent(context::assignSplits);
+        splitAssigner
+                .createAssignment(pendingReaders)
+                .ifPresent(
+                        assignments -> {
+                            LOG.info(
+                                    "The split assignment results are: {}",
+                                    assignments.assignment());
+                            context.assignSplits(assignments);
+                        });
 
-        // If periodically partition discovery is disabled and the initializing discovery has done,
+        // If periodically partition discovery is turned off and the initializing discovery has done
         // signal NoMoreSplitsEvent to pending readers.
         for (Integer reader : pendingReaders) {
             if (splitAssigner.noMoreSplits(reader)) {
@@ -240,7 +274,7 @@ public class PulsarSourceEnumerator
                         "No more PulsarPartitionSplits to assign."
                                 + " Sending NoMoreSplitsEvent to reader {} in subscription {}.",
                         reader,
-                        sourceConfiguration.getSubscriptionDesc());
+                        subscriptionDesc());
                 context.signalNoMoreSplits(reader);
             }
         }

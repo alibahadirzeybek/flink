@@ -32,8 +32,6 @@ import org.apache.flink.connector.pulsar.source.config.SourceConfiguration;
 import org.apache.flink.connector.pulsar.source.enumerator.PulsarSourceEnumState;
 import org.apache.flink.connector.pulsar.source.enumerator.PulsarSourceEnumStateSerializer;
 import org.apache.flink.connector.pulsar.source.enumerator.PulsarSourceEnumerator;
-import org.apache.flink.connector.pulsar.source.enumerator.assigner.SplitAssigner;
-import org.apache.flink.connector.pulsar.source.enumerator.assigner.SplitAssignerFactory;
 import org.apache.flink.connector.pulsar.source.enumerator.cursor.StartCursor;
 import org.apache.flink.connector.pulsar.source.enumerator.cursor.StopCursor;
 import org.apache.flink.connector.pulsar.source.enumerator.subscriber.PulsarSubscriber;
@@ -44,6 +42,10 @@ import org.apache.flink.connector.pulsar.source.reader.deserializer.PulsarDeseri
 import org.apache.flink.connector.pulsar.source.split.PulsarPartitionSplit;
 import org.apache.flink.connector.pulsar.source.split.PulsarPartitionSplitSerializer;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+
+import org.apache.pulsar.client.api.CryptoKeyReader;
+
+import javax.annotation.Nullable;
 
 /**
  * The Source implementation of Pulsar. Please use a {@link PulsarSourceBuilder} to construct a
@@ -91,18 +93,22 @@ public final class PulsarSource<OUT>
     /** The pulsar deserialization schema used for deserializing message. */
     private final PulsarDeserializationSchema<OUT> deserializationSchema;
 
+    @Nullable private final CryptoKeyReader cryptoKeyReader;
+
     /**
      * The constructor for PulsarSource, it's package protected for forcing using {@link
      * PulsarSourceBuilder}.
      */
-    PulsarSource(
+    @SuppressWarnings("java:S107")
+    public PulsarSource(
             SourceConfiguration sourceConfiguration,
             PulsarSubscriber subscriber,
             RangeGenerator rangeGenerator,
             StartCursor startCursor,
             StopCursor stopCursor,
             Boundedness boundedness,
-            PulsarDeserializationSchema<OUT> deserializationSchema) {
+            PulsarDeserializationSchema<OUT> deserializationSchema,
+            @Nullable CryptoKeyReader cryptoKeyReader) {
         this.sourceConfiguration = sourceConfiguration;
         this.subscriber = subscriber;
         this.rangeGenerator = rangeGenerator;
@@ -110,6 +116,7 @@ public final class PulsarSource<OUT>
         this.stopCursor = stopCursor;
         this.boundedness = boundedness;
         this.deserializationSchema = deserializationSchema;
+        this.cryptoKeyReader = cryptoKeyReader;
     }
 
     /**
@@ -136,21 +143,20 @@ public final class PulsarSource<OUT>
         deserializationSchema.open(initializationContext, sourceConfiguration);
 
         return PulsarSourceReaderFactory.create(
-                readerContext, deserializationSchema, sourceConfiguration);
+                readerContext, deserializationSchema, sourceConfiguration, cryptoKeyReader);
     }
 
     @Internal
     @Override
     public SplitEnumerator<PulsarPartitionSplit, PulsarSourceEnumState> createEnumerator(
             SplitEnumeratorContext<PulsarPartitionSplit> enumContext) {
-        SplitAssigner splitAssigner = SplitAssignerFactory.create(stopCursor, sourceConfiguration);
         return new PulsarSourceEnumerator(
                 subscriber,
                 startCursor,
+                stopCursor,
                 rangeGenerator,
                 sourceConfiguration,
-                enumContext,
-                splitAssigner);
+                enumContext);
     }
 
     @Internal
@@ -158,15 +164,14 @@ public final class PulsarSource<OUT>
     public SplitEnumerator<PulsarPartitionSplit, PulsarSourceEnumState> restoreEnumerator(
             SplitEnumeratorContext<PulsarPartitionSplit> enumContext,
             PulsarSourceEnumState checkpoint) {
-        SplitAssigner splitAssigner =
-                SplitAssignerFactory.create(stopCursor, sourceConfiguration, checkpoint);
         return new PulsarSourceEnumerator(
                 subscriber,
                 startCursor,
+                stopCursor,
                 rangeGenerator,
                 sourceConfiguration,
                 enumContext,
-                splitAssigner);
+                checkpoint);
     }
 
     @Internal

@@ -19,7 +19,7 @@
 package org.apache.flink.connector.pulsar.source;
 
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.connector.pulsar.source.enumerator.topic.range.UniformRangeGenerator;
+import org.apache.flink.connector.pulsar.source.enumerator.topic.range.FixedKeysRangeGenerator;
 
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SubscriptionType;
@@ -73,7 +73,8 @@ class PulsarSourceBuilderTest {
     void rangeGeneratorRequiresKeyShared() {
         PulsarSourceBuilder<String> builder = new PulsarSourceBuilder<>();
         builder.setSubscriptionType(SubscriptionType.Shared);
-        UniformRangeGenerator rangeGenerator = new UniformRangeGenerator();
+        FixedKeysRangeGenerator rangeGenerator =
+                FixedKeysRangeGenerator.builder().key("some").build();
 
         assertThatThrownBy(() -> builder.setRangeGenerator(rangeGenerator))
                 .isInstanceOf(IllegalArgumentException.class);

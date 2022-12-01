@@ -31,7 +31,7 @@ import org.apache.flink.connector.pulsar.sink.writer.delayer.FixedMessageDelayer
 import org.apache.flink.connector.pulsar.sink.writer.delayer.MessageDelayer;
 import org.apache.flink.connector.pulsar.sink.writer.router.RoundRobinTopicRouter;
 import org.apache.flink.connector.pulsar.sink.writer.serializer.PulsarSerializationSchema;
-import org.apache.flink.connector.pulsar.sink.writer.topic.TopicMetadataListener;
+import org.apache.flink.connector.pulsar.sink.writer.topic.register.FixedTopicRegister;
 import org.apache.flink.connector.pulsar.testutils.PulsarTestSuiteBase;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.OperatorIOMetricGroup;
@@ -44,6 +44,7 @@ import org.apache.flink.streaming.runtime.tasks.TestProcessingTimeService;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import org.apache.pulsar.client.api.transaction.TransactionCoordinatorClient;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -64,21 +65,29 @@ class PulsarWriterTest extends PulsarTestSuiteBase {
 
     private static final SinkWriter.Context CONTEXT = new MockSinkWriterContext();
 
+    @Test
+    void writeMessageWithGuarantee() throws Exception {
+        writeMessageWithoutGuarantee(EXACTLY_ONCE);
+    }
+
     @ParameterizedTest
-    @EnumSource(DeliveryGuarantee.class)
-    void writeMessages(DeliveryGuarantee guarantee) throws Exception {
+    @EnumSource(
+            value = DeliveryGuarantee.class,
+            names = {"AT_LEAST_ONCE", "NONE"})
+    void writeMessageWithoutGuarantee(DeliveryGuarantee guarantee) throws Exception {
         String topic = randomAlphabetic(10);
         operator().createTopic(topic, 8);
 
         SinkConfiguration configuration = sinkConfiguration(guarantee);
         PulsarSerializationSchema<String> schema = pulsarSchema(STRING);
-        TopicMetadataListener listener = new TopicMetadataListener(singletonList(topic));
+        FixedTopicRegister listener = new FixedTopicRegister(singletonList(topic));
         RoundRobinTopicRouter<String> router = new RoundRobinTopicRouter<>(configuration);
         FixedMessageDelayer<String> delayer = MessageDelayer.never();
         MockInitContext initContext = new MockInitContext();
 
         PulsarWriter<String> writer =
-                new PulsarWriter<>(configuration, schema, listener, router, delayer, initContext);
+                new PulsarWriter<>(
+                        configuration, schema, listener, router, delayer, null, initContext);
 
         writer.flush(false);
         writer.prepareCommit();

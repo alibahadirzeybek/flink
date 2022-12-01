@@ -58,8 +58,13 @@ under the License.
 						<configuration>
 							<artifactSet>
 								<includes>
+									<include>com.google.protobuf:protobuf-java</include>
+									<include>javax.xml.bind:jaxb-api</include>
+									<include>org.apache.avro:avro</include>
+									<include>org.apache.flink:flink-avro</include>
 									<include>org.apache.flink:flink-connector-base</include>
 									<include>org.apache.flink:flink-connector-pulsar</include>
+									<include>org.apache.flink:flink-json</include>
 									<include>org.apache.pulsar:bouncy-castle-bc</include>
 									<include>org.apache.pulsar:pulsar-client-admin-api</include>
 									<include>org.apache.pulsar:pulsar-client-all</include>

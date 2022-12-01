@@ -29,8 +29,6 @@ import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.testutils.junit.SharedObjectsExtension;
 import org.apache.flink.testutils.junit.SharedReference;
 
-import org.apache.flink.shaded.guava30.com.google.common.util.concurrent.Uninterruptibles;
-
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.Schema;
 import org.slf4j.Logger;
@@ -68,10 +66,8 @@ public class ControlSource extends AbstractRichFunction
             String topic,
             DeliveryGuarantee guarantee,
             int messageCounts,
-            Duration interval,
             Duration timeout) {
-        MessageGenerator generator =
-                new MessageGenerator(topic, guarantee, messageCounts, interval);
+        MessageGenerator generator = new MessageGenerator(topic, guarantee, messageCounts);
         StopSignal signal = new StopSignal(operator, topic, messageCounts, timeout);
 
         this.sharedGenerator = sharedObjects.add(generator);
@@ -138,15 +134,12 @@ public class ControlSource extends AbstractRichFunction
         private final DeliveryGuarantee guarantee;
         private final int messageCounts;
         private final List<String> expectedRecords;
-        private final Duration interval;
 
-        public MessageGenerator(
-                String topic, DeliveryGuarantee guarantee, int messageCounts, Duration interval) {
+        public MessageGenerator(String topic, DeliveryGuarantee guarantee, int messageCounts) {
             this.topic = topic;
             this.guarantee = guarantee;
             this.messageCounts = messageCounts;
             this.expectedRecords = new ArrayList<>(messageCounts);
-            this.interval = interval;
         }
 
         @Override
@@ -165,9 +158,6 @@ public class ControlSource extends AbstractRichFunction
                             + "-"
                             + randomAlphanumeric(10);
             expectedRecords.add(content);
-
-            // Make sure the message was generated in the fixed interval.
-            Uninterruptibles.sleepUninterruptibly(interval);
             return content;
         }
 

@@ -40,6 +40,7 @@ import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.common.policies.data.SubscriptionStats;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -60,6 +61,7 @@ import java.util.Random;
 import java.util.stream.Stream;
 
 import static org.apache.commons.lang3.RandomStringUtils.randomAlphabetic;
+import static org.apache.flink.connector.pulsar.source.PulsarSourceOptions.PULSAR_DEFAULT_FETCH_TIME;
 import static org.apache.flink.connector.pulsar.source.PulsarSourceOptions.PULSAR_ENABLE_AUTO_ACKNOWLEDGE_MESSAGE;
 import static org.apache.flink.connector.pulsar.source.PulsarSourceOptions.PULSAR_MAX_FETCH_RECORDS;
 import static org.apache.flink.connector.pulsar.source.PulsarSourceOptions.PULSAR_MAX_FETCH_TIME;
@@ -89,6 +91,11 @@ abstract class PulsarSourceReaderTestBase extends PulsarTestSuiteBase {
     void beforeEach(String topicName) {
         Random random = new Random(System.currentTimeMillis());
         operator().setupTopic(topicName, Schema.INT32, () -> random.nextInt(20));
+    }
+
+    @AfterEach
+    void afterEach(String topicName) {
+        operator().deleteTopic(topicName);
     }
 
     @TestTemplate
@@ -130,7 +137,8 @@ abstract class PulsarSourceReaderTestBase extends PulsarTestSuiteBase {
             boolean autoAcknowledgementEnabled, SubscriptionType subscriptionType) {
         Configuration configuration = operator().config();
         configuration.set(PULSAR_MAX_FETCH_RECORDS, 1);
-        configuration.set(PULSAR_MAX_FETCH_TIME, 1000L);
+        configuration.set(PULSAR_DEFAULT_FETCH_TIME, 2000L);
+        configuration.set(PULSAR_MAX_FETCH_TIME, 3000L);
         configuration.set(PULSAR_SUBSCRIPTION_NAME, randomAlphabetic(10));
         configuration.set(PULSAR_SUBSCRIPTION_TYPE, subscriptionType);
         if (autoAcknowledgementEnabled
@@ -150,7 +158,7 @@ abstract class PulsarSourceReaderTestBase extends PulsarTestSuiteBase {
         SourceConfiguration sourceConfiguration = new SourceConfiguration(configuration);
         return (PulsarSourceReaderBase<Integer>)
                 PulsarSourceReaderFactory.create(
-                        context, deserializationSchema, sourceConfiguration);
+                        context, deserializationSchema, sourceConfiguration, null);
     }
 
     public class PulsarSourceReaderInvocationContextProvider

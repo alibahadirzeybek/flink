@@ -21,14 +21,12 @@ package org.apache.flink.connector.pulsar.common.config;
 import org.apache.flink.annotation.Internal;
 
 import org.apache.pulsar.client.admin.PulsarAdmin;
-import org.apache.pulsar.client.admin.PulsarAdminBuilder;
 import org.apache.pulsar.client.api.Authentication;
 import org.apache.pulsar.client.api.AuthenticationFactory;
 import org.apache.pulsar.client.api.ClientBuilder;
 import org.apache.pulsar.client.api.ProxyProtocol;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.impl.auth.AuthenticationDisabled;
-import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
 
 import java.util.Map;
 import java.util.TreeSet;
@@ -153,11 +151,11 @@ public final class PulsarClientFactory {
     }
 
     /**
-     * PulsarAdmin shares almost the same configuration with PulsarClient, we use this creating
-     * method for creating PulsarAdmin instead of using {@link ClientConfigurationData}.
+     * PulsarAdmin shares almost the same configuration with PulsarClient, but we separate this
+     * creating method for directly use it.
      */
     public static PulsarAdmin createAdmin(PulsarConfiguration configuration) {
-        PulsarAdminBuilder builder = PulsarAdmin.builder();
+        PulsarAdminBuilder builder = new PulsarAdminBuilder();
 
         // Create the authentication instance for the Pulsar client.
         builder.authentication(createAuthentication(configuration));
@@ -182,6 +180,7 @@ public final class PulsarClientFactory {
                 PULSAR_REQUEST_TIMEOUT, v -> builder.requestTimeout(v, MILLISECONDS));
         configuration.useOption(
                 PULSAR_AUTO_CERT_REFRESH_TIME, v -> builder.autoCertRefreshTime(v, MILLISECONDS));
+        configuration.useOption(PULSAR_NUM_IO_THREADS, builder::numIoThreads);
 
         return sneakyClient(builder::build);
     }

@@ -65,8 +65,9 @@ public class PulsarMockRuntime implements PulsarRuntime {
     public void tearDown() {
         try {
             pulsarService.close();
-            operator.close();
-            this.operator = null;
+            if (operator != null) {
+                operator.close();
+            }
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
@@ -94,7 +95,7 @@ public class PulsarMockRuntime implements PulsarRuntime {
         configuration.setAuthorizationEnabled(false);
         configuration.setAllowAutoTopicCreation(true);
         configuration.setBrokerDeleteInactiveTopicsEnabled(false);
-
+        configuration.setTopicLevelPoliciesEnabled(true);
         configuration.setWebSocketServiceEnabled(false);
         // Use runtime dynamic ports
         configuration.setBrokerServicePort(Optional.of(0));

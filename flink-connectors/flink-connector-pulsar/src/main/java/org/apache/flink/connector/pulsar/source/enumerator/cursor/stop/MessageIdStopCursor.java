@@ -22,7 +22,8 @@ import org.apache.flink.connector.pulsar.source.enumerator.cursor.StopCursor;
 
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
-import org.apache.pulsar.client.impl.MessageIdImpl;
+
+import java.util.Objects;
 
 import static org.apache.flink.connector.pulsar.source.enumerator.cursor.MessageIdUtils.unwrapMessageId;
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -41,13 +42,10 @@ public class MessageIdStopCursor implements StopCursor {
     private final boolean inclusive;
 
     public MessageIdStopCursor(MessageId messageId, boolean inclusive) {
-        MessageIdImpl idImpl = unwrapMessageId(messageId);
-        checkArgument(!earliest.equals(idImpl), "MessageId.earliest is not supported.");
-        checkArgument(
-                !latest.equals(idImpl),
-                "MessageId.latest is not supported, use LatestMessageStopCursor instead.");
+        checkArgument(!earliest.equals(messageId), "MessageId.earliest is not supported.");
+        checkArgument(!latest.equals(messageId), "Use LatestMessageStopCursor instead.");
 
-        this.messageId = idImpl;
+        this.messageId = unwrapMessageId(messageId);
         this.inclusive = inclusive;
     }
 
@@ -55,5 +53,22 @@ public class MessageIdStopCursor implements StopCursor {
     public StopCondition shouldStop(Message<?> message) {
         MessageId current = message.getMessageId();
         return StopCondition.compare(messageId, current, inclusive);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        MessageIdStopCursor that = (MessageIdStopCursor) o;
+        return inclusive == that.inclusive && Objects.equals(messageId, that.messageId);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(messageId, inclusive);
     }
 }

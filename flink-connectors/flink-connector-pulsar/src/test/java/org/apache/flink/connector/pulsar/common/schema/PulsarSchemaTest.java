@@ -27,6 +27,7 @@ import org.apache.flink.connector.pulsar.testutils.SampleData.Foo;
 import org.apache.flink.util.InstantiationUtil;
 
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.client.api.schema.SchemaDefinition;
 import org.apache.pulsar.client.impl.schema.AvroSchema;
 import org.apache.pulsar.client.impl.schema.JSONSchema;
 import org.apache.pulsar.client.impl.schema.KeyValueSchemaImpl;
@@ -36,10 +37,16 @@ import org.apache.pulsar.common.schema.KeyValue;
 import org.apache.pulsar.common.schema.SchemaType;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.Serializable;
+
+import static org.apache.pulsar.client.impl.schema.util.SchemaUtil.getJsr310ConversionEnabledFromSchemaInfo;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Unit tests for {@link PulsarSchema}. */
 class PulsarSchemaTest {
@@ -117,9 +124,53 @@ class PulsarSchemaTest {
         assertPulsarSchemaIsSerializable(new PulsarSchema<>(KV, Foo.class, FA.class));
     }
 
+    @Test
+    void largeAvroSchemaSerialization() throws Exception {
+        Schema<LargeMessage> largeMessageSchema = Schema.AVRO(LargeMessage.class);
+        assertPulsarSchemaIsSerializable(
+                new PulsarSchema<>(largeMessageSchema, LargeMessage.class));
+    }
+
+    @Test
+    void avroSchemaWithJsr310Support() throws IOException, ClassNotFoundException {
+        SchemaDefinition<LargeMessage> definition =
+                SchemaDefinition.<LargeMessage>builder()
+                        .withPojo(LargeMessage.class)
+                        .withAlwaysAllowNull(true)
+                        .withJSR310ConversionEnabled(true)
+                        .build();
+        AvroSchema<LargeMessage> schema = AvroSchema.of(definition);
+
+        PulsarSchema<LargeMessage> schema1 = new PulsarSchema<>(schema, LargeMessage.class);
+        PulsarSchema<LargeMessage> clonedSchema = InstantiationUtil.clone(schema1);
+        Schema<LargeMessage> avroSchema = clonedSchema.getPulsarSchema();
+
+        assertThat(avroSchema).isInstanceOf(AvroSchema.class);
+        assertTrue(getJsr310ConversionEnabledFromSchemaInfo(avroSchema.getSchemaInfo()));
+    }
+
     private <T> void assertPulsarSchemaIsSerializable(PulsarSchema<T> schema) throws Exception {
         PulsarSchema<T> clonedSchema = InstantiationUtil.clone(schema);
         assertEquals(clonedSchema.getSchemaInfo(), schema.getSchemaInfo());
         assertEquals(clonedSchema.getRecordClass(), schema.getRecordClass());
+    }
+
+    /** A POJO Class which would generate a large schema by Avro. */
+    public static class LargeMessage implements Serializable {
+        private static final long serialVersionUID = 5364494369740402518L;
+
+        public String
+                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
+        public String
+                bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;
+        public String
+                cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;
+        public String
+                dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd;
+        public String
+                eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee;
+        // the problem begins
+        public String
+                ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
     }
 }

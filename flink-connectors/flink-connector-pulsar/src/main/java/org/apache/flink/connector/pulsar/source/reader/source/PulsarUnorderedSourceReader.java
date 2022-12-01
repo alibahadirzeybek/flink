@@ -19,18 +19,18 @@
 package org.apache.flink.connector.pulsar.source.reader.source;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
+import org.apache.flink.connector.pulsar.common.request.PulsarAdminRequest;
 import org.apache.flink.connector.pulsar.source.config.SourceConfiguration;
+import org.apache.flink.connector.pulsar.source.reader.emitter.PulsarRecordEmitter;
 import org.apache.flink.connector.pulsar.source.reader.fetcher.PulsarUnorderedFetcherManager;
-import org.apache.flink.connector.pulsar.source.reader.message.PulsarMessage;
 import org.apache.flink.connector.pulsar.source.reader.split.PulsarUnorderedPartitionSplitReader;
 import org.apache.flink.connector.pulsar.source.split.PulsarPartitionSplit;
 import org.apache.flink.connector.pulsar.source.split.PulsarPartitionSplitState;
 
-import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.transaction.TransactionCoordinatorClient;
 import org.apache.pulsar.client.api.transaction.TxnID;
@@ -47,6 +47,8 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.function.Supplier;
 
+import static java.util.stream.Collectors.toList;
+
 /**
  * The source reader for pulsar subscription Shared and Key_Shared, which consumes the unordered
  * messages.
@@ -56,24 +58,28 @@ public class PulsarUnorderedSourceReader<OUT> extends PulsarSourceReaderBase<OUT
     private static final Logger LOG = LoggerFactory.getLogger(PulsarUnorderedSourceReader.class);
 
     @Nullable private final TransactionCoordinatorClient coordinatorClient;
-    @VisibleForTesting final SortedMap<Long, List<TxnID>> transactionsToCommit;
+    private final SortedMap<Long, List<TxnID>> transactionsToCommit;
     private final List<TxnID> transactionsOfFinishedSplits;
 
+    private boolean started = false;
+
     public PulsarUnorderedSourceReader(
-            FutureCompletingBlockingQueue<RecordsWithSplitIds<PulsarMessage<OUT>>> elementsQueue,
-            Supplier<PulsarUnorderedPartitionSplitReader<OUT>> splitReaderSupplier,
+            FutureCompletingBlockingQueue<RecordsWithSplitIds<Message<byte[]>>> elementsQueue,
+            Supplier<PulsarUnorderedPartitionSplitReader> splitReaderSupplier,
+            PulsarRecordEmitter<OUT> recordEmitter,
             SourceReaderContext context,
             SourceConfiguration sourceConfiguration,
             PulsarClient pulsarClient,
-            PulsarAdmin pulsarAdmin,
+            PulsarAdminRequest adminRequest,
             @Nullable TransactionCoordinatorClient coordinatorClient) {
         super(
                 elementsQueue,
-                new PulsarUnorderedFetcherManager<>(elementsQueue, splitReaderSupplier::get),
+                new PulsarUnorderedFetcherManager(elementsQueue, splitReaderSupplier::get),
+                recordEmitter,
                 context,
                 sourceConfiguration,
                 pulsarClient,
-                pulsarAdmin);
+                adminRequest);
 
         this.coordinatorClient = coordinatorClient;
         this.transactionsToCommit = Collections.synchronizedSortedMap(new TreeMap<>());
@@ -81,7 +87,42 @@ public class PulsarUnorderedSourceReader<OUT> extends PulsarSourceReaderBase<OUT
     }
 
     @Override
+    public void start() {
+        this.started = true;
+        super.start();
+    }
+
+    @Override
+    public void addSplits(List<PulsarPartitionSplit> splits) {
+        if (started) {
+            // We only accept splits after this reader is started and registered to the pipeline.
+            // This would ignore the splits from the state.
+            super.addSplits(splits);
+        } else {
+            // Abort the pending transaction in this split.
+            for (PulsarPartitionSplit split : splits) {
+                LOG.info("Ignore the split {} saved in checkpoint.", split);
+
+                TxnID transactionId = split.getUncommittedTransactionId();
+                if (transactionId != null && coordinatorClient != null) {
+                    try {
+                        coordinatorClient.abort(transactionId);
+                    } catch (Exception e) {
+                        LOG.debug(
+                                "Error in aborting transaction {} from the checkpoint",
+                                transactionId,
+                                e);
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
     protected void onSplitFinished(Map<String, PulsarPartitionSplitState> finishedSplitIds) {
+        // Close all the finished splits.
+        closeFinishedSplits(finishedSplitIds.keySet());
+
         // We don't require new splits, all the splits are pre-assigned by source enumerator.
         if (LOG.isDebugEnabled()) {
             LOG.debug("onSplitFinished event: {}", finishedSplitIds);
@@ -103,8 +144,7 @@ public class PulsarUnorderedSourceReader<OUT> extends PulsarSourceReaderBase<OUT
     public List<PulsarPartitionSplit> snapshotState(long checkpointId) {
         LOG.debug("Trigger the new transaction for downstream readers.");
         List<PulsarPartitionSplit> splits =
-                ((PulsarUnorderedFetcherManager<OUT>) splitFetcherManager)
-                        .snapshotState(checkpointId);
+                ((PulsarUnorderedFetcherManager) splitFetcherManager).snapshotState(checkpointId);
 
         if (coordinatorClient != null) {
             // Snapshot the transaction status and commit it after checkpoint finished.
@@ -116,6 +156,11 @@ public class PulsarUnorderedSourceReader<OUT> extends PulsarSourceReaderBase<OUT
                     txnIDs.add(uncommittedTransactionId);
                 }
             }
+
+            // Add finished splits' transactions.
+            txnIDs.addAll(transactionsOfFinishedSplits);
+            // Purge the transactions.
+            transactionsOfFinishedSplits.clear();
         }
 
         return splits;
@@ -126,20 +171,38 @@ public class PulsarUnorderedSourceReader<OUT> extends PulsarSourceReaderBase<OUT
         LOG.debug("Committing transactions for checkpoint {}", checkpointId);
 
         if (coordinatorClient != null) {
-            for (Map.Entry<Long, List<TxnID>> entry : transactionsToCommit.entrySet()) {
-                Long currentCheckpointId = entry.getKey();
-                if (currentCheckpointId > checkpointId) {
-                    continue;
-                }
+            List<Long> checkpointIds =
+                    transactionsToCommit.keySet().stream()
+                            .filter(id -> id <= checkpointId)
+                            .collect(toList());
 
-                List<TxnID> transactions = entry.getValue();
-                for (TxnID transaction : transactions) {
-                    coordinatorClient.commit(transaction);
-                    transactionsOfFinishedSplits.remove(transaction);
+            for (Long id : checkpointIds) {
+                List<TxnID> transactions = transactionsToCommit.remove(id);
+                if (transactions != null) {
+                    for (TxnID transaction : transactions) {
+                        coordinatorClient.commit(transaction);
+                    }
                 }
-
-                transactionsToCommit.remove(currentCheckpointId);
             }
         }
+    }
+
+    @Override
+    public void close() throws Exception {
+        // Abort all the pending transactions.
+        if (coordinatorClient != null) {
+            for (List<TxnID> transactions : transactionsToCommit.values()) {
+                for (TxnID transaction : transactions) {
+                    try {
+                        coordinatorClient.abort(transaction);
+                    } catch (Exception e) {
+                        LOG.warn("Error in aborting transaction {}", transaction, e);
+                    }
+                }
+            }
+        }
+
+        // Close the pulsar client finally.
+        super.close();
     }
 }
